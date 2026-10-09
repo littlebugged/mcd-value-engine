@@ -1,0 +1,50 @@
+{
+  "_comment": "脱敏示例。不含任何真实凭据。请把 ${MCD_MCP_TOKEN} 替换成你自己的环境变量注入方式，绝不要把明文 Token 写进会被提交或分享的文件。",
+  "_token": "到 https://open.mcd.cn/mcp 用手机号登录后激活获取，然后 export MCD_MCP_TOKEN=你的token",
+  "_endpoint": "https://mcp.mcd.cn",
+  "_transport": "Streamable HTTP",
+  "_rateLimit": "每 Token 600 次/分钟，超限返回 429",
+
+  "mcpServers": {
+    "mcd-mcp": {
+      "type": "streamablehttp",
+      "url": "https://mcp.mcd.cn",
+      "headers": {
+        "Authorization": "Bearer ${MCD_MCP_TOKEN}"
+      }
+    }
+  },
+
+  "_variants": {
+    "note": "不同客户端对传输类型的键名和取值不统一，以下按各客户端文档给出。核心三项一致：url / streamable-http / Bearer Token。",
+    "claudeCode": {
+      "command": "claude mcp add --transport http mcd-mcp https://mcp.mcd.cn --header \"Authorization: Bearer ${MCD_MCP_TOKEN}\""
+    },
+    "cursor": {
+      "mcpServers": {
+        "mcd-mcp": {
+          "url": "https://mcp.mcd.cn",
+          "headers": { "Authorization": "Bearer ${MCD_MCP_TOKEN}" }
+        }
+      }
+    },
+    "cline_or_roo": {
+      "mcpServers": {
+        "mcd-mcp": {
+          "type": "streamableHttp",
+          "url": "https://mcp.mcd.cn",
+          "headers": { "Authorization": "Bearer ${MCD_MCP_TOKEN}" }
+        }
+      }
+    },
+    "vscode": {
+      "servers": {
+        "mcd-mcp": {
+          "type": "http",
+          "url": "https://mcp.mcd.cn",
+          "headers": { "Authorization": "Bearer ${MCD_MCP_TOKEN}" }
+        }
+      }
+    }
+  }
+}

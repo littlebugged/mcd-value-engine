@@ -1,0 +1,23 @@
+# 凭据 —— 绝不入库
+.env
+.env.*
+*.token
+mcp-token*
+secrets.*
+
+# 本地真实数据（价格历史属于个人隐私，首次运行会自动创建）
+data/price_history.json
+
+# 临时核价文件
+/tmp/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
