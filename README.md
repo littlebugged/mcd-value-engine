@@ -3,6 +3,8 @@
 > 基于麦当劳中国官方 MCP（Model Context Protocol）的省钱决策引擎。
 > 参赛作品：麦当劳程序员创意开发大赛（2026.10.09 — 10.25）
 
+**本仓库含两个互补的能力**：`麦门薯条推荐官`（触发词「我要吃薯条！」，把薯条吃明白的聚焦入口）与 `麦门省钱精算师`（整单叠券、核价、历史比价的通用引擎）。两者共用同一套零依赖 MCP 客户端与真实接口适配层。
+
 ## 为什么还要再做一个麦当劳 Skill
 
 卡包里有 12 张券，结账时你依然不知道该用哪几张。
@@ -54,51 +56,101 @@ python3 scripts/mcp_client.py list-tools    # 看你能用到哪些工具
 
 把 `SKILL.md` 挂到你的 Agent 上（WorkBuddy / Claude Code / Cursor / Cherry Studio 等都行）。之后直接说人话：
 
+> "我要吃薯条！帮我看看怎么买最划算"
 > "帮我点个巨无霸加薯条，看看怎么用券最省"
 
-Agent 会自己走完六步流程。
+Agent 会自己走完对应流程。`SKILL.md` 当前主体是 **麦门薯条推荐官**，省钱精算师作为下游升级路径在同一文件里说明。
+
+## 例零：麦门薯条推荐官（聚焦入口）
+
+说「我要吃薯条」，引擎会枚举全门店所有含薯条的单品与套餐，按每元热量和升档边际效率排出最划算的买法：
+
+```bash
+python3 scripts/fetch_fries_data.py --store 1950264 --out /tmp/mcd_fries
+python3 scripts/fries.py recommend \
+  --meals /tmp/mcd_fries/meals.json \
+  --nutrition /tmp/mcd_fries/nutrition.json \
+  --details-dir /tmp/mcd_fries/details \
+  --coupons /tmp/mcd_fries/query-my-coupons.json
+```
+
+真实输出（北京双桥路门店，2026-10-09）：
+
+```
+单品 8 款 · 可选薯条套餐 38 个
+【一、单买薯条类单品】
+  · 薯条          ¥14.5   289 kcal   19.9 kcal/¥ （可单买）
+  · 心形薯饼5块    ¥15.5   146 kcal    9.4 kcal/¥ （可单买）
+  · 月下相思扭扭薯  ¥16.0   营养暂无            （可单买）
+【三、推荐结论】
+  1) 单买最划算：薯条（中薯条）19.9 kcal/¥。
+  2) 升档边际效率：中薯条→大薯条 加 ¥1.5 多得 90 kcal，边际 60 kcal/¥，是单价 3 倍。
+  3) 大薯条只能靠套餐升档拿到（单买菜单没有它），到手 ¥16.0。
+  4) 用券：「薯薯任选」¥9.9 → 大薯条 省 ¥6.1（38.3 kcal/¥）。
+```
+
+三个反直觉结论都来自真实数据：**大薯条不在单买菜单里**、**升大薯条的边际效率是基础单价的 3 倍**、**薯类券用在大薯条最省**。
 
 ## 三个例子
 
-### 例一：券怎么叠
+下面这段是**真实调用麦当劳 MCP 跑出来的**，不是构造数据。门店为北京双桥路餐厅，菜单 120 款，卡包 14 张券，日期 2026-10-09。
 
 ```bash
-python3 scripts/optimizer.py plan \
-  --coupons /tmp/my_coupons.json \
-  --menu /tmp/menu.json \
-  --items 'M1:1' 'M3:1'
+# 1. 拿数据
+python3 scripts/mcp_client.py call query-my-coupons --args '{"page":1,"pageSize":20}' > /tmp/coupons.json
+python3 scripts/mcp_client.py call query-nearby-stores \
+  --args '{"city":"北京","keyword":"双桥","searchType":2,"beType":1}'
+python3 scripts/mcp_client.py call query-meals \
+  --args '{"storeCode":"1950264","beType":1,"orderType":1}' > /tmp/meals.json
+
+# 2. 一条命令出结论
+python3 scripts/mcd_schema.py --coupons /tmp/coupons.json --meals /tmp/meals.json
 ```
 
-```jsonc
-{
-  "subtotal": 36.5,
-  "candidate_plans": [
-    { "coupons": ["满30减5"], "estimated_discount": 5.0, "estimated_pay": 31.5 }
-  ],
-  "rejected_coupons": [
-    { "name": "麦香鱼特价9.9", "reason": "购物车里没有该券适用的商品" },
-    { "name": "全场8折",       "reason": "未达使用门槛（需满 40.0 元，当前 36.5 元）" }
-  ]
-}
+```
+【今天能用】按省额排序
+
+  薯薯任选   用券价 ¥9.9
+    最优选择 → 月下相思扭扭薯（原价 ¥16.0）省 ¥6.1
+    同类可选 → “我就喜欢”鸡薯双全盒(省6.0)、心形薯饼5块(省5.6)、薯条(省4.6)
+    到期 2026-10-09  今日到期/到店专用/外送专用
+
+  麦旋风任选   用券价 ¥9.9
+    最优选择 → 泷盐星星麦旋风（原价 ¥15.5）省 ¥5.6
+    同类可选 → 蓝莓爆爆珠麦旋风(省5.6)、柠檬脆脆麦旋风(省5.6)、经典麦旋风(省4.6)
+    到期 2026-10-09  今日到期/到店专用/外送专用
+
+  合计潜在节省 ¥11.7
+
+【还没生效 / 已过期】8 张
+  · 巧克力味厚松饼猪柳蛋套餐 — 未到可用日期（2026-10-10 ~ 2026-10-10）
+  · 火腿扒堡早餐两件套 — 未到可用日期（2026-10-12 ~ 2026-10-12）
+  ...
 ```
 
-被排除的券**附理由**。知道"差 3.5 元到门槛"之后，你才能判断要不要凑单 —— 这才是决策依据。
+两个结论值得单独说：
+
+**「任选」要选最贵的。** 麦旋风有四款，14.5 到 15.5 不等。用券价同样是 9.9，买 15.5 那款省 5.6，买 14.5 的经典款只省 4.6 —— 差 1 块。薯薯同理，扭扭薯 16 元省 6.1，薯条 14.5 只省 4.6，差 1.5。
+
+**卡包里 10 张券，今天只有 2 张能用。** 剩下 8 张是麦当劳按日发放的未来早餐券（10/10 到 10/17 每天一张）。`enable` 字段把它们标成 0，不过滤就会推荐一堆今天核销不了的券。
 
 ### 例二：哪种才是真性价比
 
-```bash
-python3 scripts/optimizer.py value --menu /tmp/menu.json --nutrition /tmp/nutrition.json
-```
+加上 `--nutrition` 参数，用 `list-nutrition-foods` 的 160 条营养数据算每元价值：
 
 ```
-热量榜（每元热量）      蛋白榜（每元蛋白）
-1. 薯条大    42.5      1. 板烧鸡腿堡  1.27
-2. 麦香鱼    26.0      2. 巨无霸      1.06
-3. 板烧鸡腿堡 22.8     3. 麦香鱼      1.13
-4. 巨无霸    22.4      4. 薯条大      0.50
+每元热量榜（扛饿）              每元蛋白榜（健身）
+1. 派              29.0 kcal/元   1. 那么大鸡排（椒盐风味） 1.66 g/元
+2. 那么大鸡排（椒盐风味） 26.6     2. 双层吉士汉堡        1.20 g/元
+3. 新地            22.6          3. 双层深海鳕鱼堡      1.12 g/元
+4. 芝士安格斯厚牛堡    22.1        4. 麦辣鸡腿汉堡        1.07 g/元
+5. 麦香鸡           21.7          5. 不素之霸双层牛堡     1.06 g/元
+
+注意：热量榜第一是「派」，蛋白榜第一却是「那么大鸡排（椒盐风味）」。
+扛饿和高蛋白从来不是同一件事，先想清楚要哪个。
 ```
 
-薯条在热量榜第一，在蛋白榜垫底。**"性价比"从来不是一个指标**，取决于你要的是饱腹还是蛋白。
+热量榜第一名和蛋白榜第一名从来不是同一个东西。**"性价比"从来不是一个指标**，取决于你要的是饱腹还是蛋白。
 
 ### 例三：现在是不是好价
 
@@ -126,12 +178,15 @@ python3 scripts/optimizer.py snap --key "巨无霸+薯条大" --pay 28.9 --disco
 ## 仓库结构
 
 ```
-SKILL.md                     技能主体，Agent 运行时加载
+SKILL.md                     技能主体（麦门薯条推荐官 + 省钱精算师），Agent 运行时加载
 scripts/
   mcp_client.py              MCP Streamable HTTP 客户端（零依赖，含 SSE 解析）
+  mcd_schema.py              真实接口适配层 + 券包体检（真实跑通的那套）
   optimizer.py               组合求解 / 核价排序 / 每元价值 / 价格快照
+  fries.py                   麦门薯条推荐官核心：枚举含薯条单品/套餐 + 推荐
+  fetch_fries_data.py        一键拉取薯条推荐官所需数据（meals/nutrition/details）
 references/
-  tools.md                   官方 MCP 工具索引
+  tools.md                   官方 MCP 工具索引（实测 35 个）
 web/
   index.html                 零依赖单页工具，纯本地计算
 data/
@@ -139,6 +194,8 @@ data/
 README.md / CONTEST_DECLARATION.md / MCP_INTEGRATION.md /
 mcp-config.example.json / workbuddy.md
 ```
+
+`optimizer.py` 是通用的券组合引擎，`mcd_schema.py` 是**麦当劳真实接口**的适配层。真实字段结构和文档里写的差别很大，这层是实测之后才写出来的 —— 详见 `SKILL.md` 的「真实接口要点」。
 
 ## 设计上的几个坚持
 
@@ -150,12 +207,25 @@ mcp-config.example.json / workbuddy.md
 
 **数据不出本地。** 价格历史写在你自己的磁盘上，网页工具纯前端计算，没有后端。这与"本地优先、不上传"的隐私趋势一致。
 
+## 真实接口长什么样（和文档不一样）
+
+开发时接了真实 MCP 服务，发现三处和官方 README 描述对不上的地方，都记在 `scripts/mcd_schema.py` 的注释里：
+
+1. **券不是「满 X 减 Y」，是「用券价」。** `discountInfo.discountValue="9.9"` 表示花 9.9 买它，省多少 = 商品原价 − 9.9。光看券算不出价值，必须结合菜单。
+2. **菜单是「商品码 → 商品」的字典**，不是数组。价格字段是 `currentPrice` / `originalPrice`。
+3. **营养数据不是 JSON，是自定义文本**：`[160]{productName,energyKcal,protein,...}:` 后接 CSV 行。
+
+另外两个坑：`query-nearby-stores` 的 `searchType` 必须传 `2`（传 1 会报「收藏餐厅列表为空」）；券有 `enable` 字段，0 表示还没到可用日期。
+
+这些如果只看官方文档是发现不了的。
+
 ## 已知边界
 
-- 券的字段命名在不同版本接口里可能变化，`optimizer.py` 用启发式归一化（每个语义字段列了多个候选 key）来兼容。若遇到新字段，在 `normalize_coupon` 里补一个 key 即可。
-- 券叠加规则以服务端为准。本地的互斥剪枝是保守策略（同品类不叠、单品券不重复作用于同一商品），宁可少推荐，不推荐用不了的。
-- 服务仅覆盖中国大陆（不含港澳台）。
-- 麦当劳 MCP 工具集会随版本迭代，`references/tools.md` 记录到 v1.0.9。请以 `list-tools` 的实际返回为准。
+- 券的字段命名在不同版本接口里可能变化，`mcd_schema.py` 针对当前实测版本编写，`optimizer.py` 另有一套启发式归一化（每个语义字段多个候选 key）兜底。接口变了优先改 `mcd_schema.py`。
+- 券名到商品的匹配是**文本包含**，不是官方的适用关系。「薯薯任选」要折叠叠字才能匹配到「薯条」「薯饼」；早餐商品不在正餐菜单里时会匹配不到，报告里会归入「菜单里没找到对应商品」而不是假装能用。
+- 券叠加规则以服务端为准。本地的互斥剪枝是保守策略，宁可少推荐，不推荐用不了的。
+- 服务仅覆盖中国大陆（不含港澳台）。实测当前工具数 35 个，比官方 README 列的 31 个多 4 个（含 `query-promotions`、`query-survey-coupon`）。请以 `list-tools` 的实际返回为准。
+- `calculate-price` 的下游核价需要 `addressId`（外送）或完整门店参数，本项目的报告阶段按菜单原价估算，已在输出中明确标注。
 
 ## 许可与声明
 

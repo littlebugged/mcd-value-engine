@@ -1,148 +1,134 @@
 ---
-name: mcd-value-engine
-description: 麦门省钱精算师。用麦当劳中国官方 MCP 帮用户把一单吃明白：枚举券的真实可叠加组合、逐个核价找出真正最优解、算每元热量与每元蛋白判断哪款才是性价比之王、对比历史成交价告诉你现在是不是好价。当用户要点麦当劳、问哪张券划算、问怎么点最省、问哪款性价比高、问现在是不是好价时使用。
+name: 麦门薯条推荐官
+description: 麦门薯条推荐官（触发词「我要吃薯条！」）。用麦当劳中国官方 MCP 把薯条吃明白——拉取门店菜单，枚举所有「含薯条 / 能选薯条」的单品与套餐，按每元热量和升档边际效率排出最划算的买法，并指出大薯条只能靠套餐升档、哪张券用在哪个薯条上最省。当用户说「我要吃薯条」「怎么买薯条最划算」「哪个套餐薯条最多」「大薯条怎么买」「升大薯条值不值」时使用。底层复用同一套麦当劳 MCP 适配层（mcd-value-engine）。
 ---
 
-# 麦门省钱精算师
+# 麦门薯条推荐官（别名：我要吃薯条！）
 
-不是把券列一遍就完事。绝大部分"优惠券助手"停在"你有这些券"，而真正省钱要回答三个更难的问题：**哪几张能叠加、叠加后到底哪组最便宜、这个价格历史上算不算低。**
+别人给你列菜单，这本事停在「有薯条」。真正有用的是三个更难的问题：**全门店到底哪几款含薯条、单买和套餐升档哪个更划算、大薯条为什么菜单上根本买不到。**
 
-## 它与别的麦当劳 Skill 有什么不同
+这套工具逐个套餐调 `query-meal-detail`，把藏在「小食轮次」里的薯条规格（中/大薯条、扭扭薯、薯饼）全部翻出来，再用营养数据算出每元热量和升档边际效率，最后叠上你卡包里的券。
+
+## 它和别的「薯条助手」有什么不同
 
 | 别家做到 | 这里多做一层 |
 |---|---|
-| 列出你有哪些券 | 枚举券的**合法叠加组合**，逐个用 `calculate-price` 真机核价，用实付金额排序 |
-| 告诉你打折了 | 算**每元热量 / 每元蛋白质**，两个榜常常不是同一批餐品 —— 这才是"性价比"的真实含义 |
-| 当次便宜多少 | 存价格快照，对比**你自己**的历史成交价，回答"现在是不是好价" |
-| 推荐单品券 | 校验券的适用范围，**购物车里没这个商品就不推荐**（最常见的翻车点） |
+| 告诉你「有薯条」 | **枚举全图鉴**：单品 8 款 + 可选薯条套餐 38 个（实测北京双桥路门店），一个不漏 |
+| 说「大薯条更划算」 | 算**升档边际效率**：中→大 加 ¥1.5 多得 90 kcal，边际 60 kcal/¥，是基础单价的 3 倍 —— 这个数不单独算永远看不出来 |
+| 列券名 | 算**薯类券用在哪个薯条最省**：「薯薯任选」¥9.9 用在大薯条省 ¥6.1（38.3 kcal/¥） |
+| 默认菜单价 | 指出 **大薯条不在单买菜单里**，只能靠套餐把默认中薯条升档拿到（到手 ¥16.0） |
 
 ## 前置条件
 
 - 麦当劳 MCP Token：到 <https://open.mcd.cn/mcp> 手机号登录后激活获取
 - 环境变量：`export MCD_MCP_TOKEN=你的token`
-- 已配置 MCP Server：见 `mcp-config.example.json`，端点 `https://mcp.mcd.cn`，Streamable HTTP
+- 端点 `https://mcp.mcd.cn`，Streamable HTTP，协议 `2025-06-18`，600 次/分钟（超限 429）
 
-如果没配 MCP，也可以用纯本地模式（`optimizer.py value` / `snap`，见文末）。
+## 主流程：把薯条吃明白
 
-## 主流程：帮用户下最省的一单
-
-### 第 1 步：把可用券全部拿到手
-
-```
-query-my-coupons              -> 我卡包里已有的券
-available-coupons             -> 麦麦省现在能领的券
-```
-
-**先问用户要不要一键领。** 用户同意后用 `auto-bind-coupons` 领全，再重新 `query-my-coupons` 拉一次。很多人卡包里是空的，因为从没领过。
-
-把两次结果分别存成 `/tmp/my_coupons.json` 和 `/tmp/available_coupons.json`。
-
-### 第 2 步：定位门店与菜单
-
-```
-delivery-query-addresses      -> 拿 addressId（外送）
-query-nearby-stores           -> 拿 storeCode / beCode（自取、到店）
-delivery-query-stores         -> 外送场景下的可配送门店
-query-meals                   -> 该门店实际售卖的菜单
-query-store-coupons           -> 该门店专属券（和全国券不是一回事，别漏）
-```
-
-菜单存成 `/tmp/menu.json`，门店券存成 `/tmp/store_coupons.json`。
-
-### 第 3 步：枚举合法组合
+### 第 1 步：一键拉全数据
 
 ```bash
-python3 scripts/optimizer.py plan \
-  --coupons /tmp/my_coupons.json \
-  --menu /tmp/menu.json \
-  --items '巨无霸代码:1' '薯条大代码:1'
+export MCD_MCP_TOKEN=你的token
+python3 scripts/fetch_fries_data.py --store 1950264 --out /tmp/mcd_fries
 ```
 
-也可以 `--cart /tmp/cart.json` 传完整购物车，或 `--subtotal 45` 只给金额。
+这条命令替你做三件事并落盘：
+- `query-meals` → `meals.json`（门店在售菜单，~120 款）
+- `list-nutrition-foods` → `nutrition.json`（160 条营养数据，性价比的分母）
+- 对**每个餐品**调 `query-meal-detail` → `details/<code>.json`（薯条规格和差价藏在这里）
 
-输出里 `candidate_plans` 是按估算优惠排序的候选项，`rejected_coupons` 说明每张券为什么用不了 —— **把 rejected 的理由复述给用户听**，这比报个数字更让人信服。
+> 嫌调用多？加 `--combos-only` 只抓套餐类，调用量从 ~120 降到几十。
 
-### 第 4 步：逐个真机核价（关键，别省）
-
-估算不等于实付。**每个候选方案都要真的调一次 `calculate-price`**，把结果分别存文件：
-
-```
-calculate-price  →  /tmp/price_1.json, /tmp/price_2.json, ...
-```
-
-券叠加规则、配送费、打包费只有服务端算得准。跳这一步，前面全白做。
-
-### 第 5 步：排序出最优解
+### 第 2 步：出全图鉴 + 推荐
 
 ```bash
-python3 scripts/optimizer.py rank \
-  --results /tmp/price_1.json /tmp/price_2.json /tmp/price_3.json \
-  --labels "只叠加满减" "满减+单品" "不用券"
+python3 scripts/fries.py recommend \
+  --meals /tmp/mcd_fries/meals.json \
+  --nutrition /tmp/mcd_fries/nutrition.json \
+  --details-dir /tmp/mcd_fries/details \
+  --coupons /tmp/mcd_fries/query-my-coupons.json \   # 可选，加上才有用券建议
+  --store "北京双桥路餐厅 (1950264)"
 ```
 
-### 第 6 步：记一笔，回答"现在是不是好价"
+两个子命令：
+- `recommend` —— 全图鉴 + 推荐结论（给人看的报告）
+- `enumerate --json` —— 只要结构化清单（给程序/上游用）
 
-```bash
-python3 scripts/optimizer.py snap \
-  --key "巨无霸+薯条大" --pay 28.9 --discount 7.6 --store "门店名"
+### 真实接口要点（照抄，别自创）
+
+这些是实测踩出来的，官方文档没写：
+
+- **价格基准必须从小食默认项反推。** 套餐里薯条各规格只有「相对默认项的差价」，绝对值要靠默认项（通常是中薯条）的真实菜单价反推。旧版错在「拿菜单里第一个薯条类商品当基准」，把鸡薯双全盒的 ¥15.9 当成了中薯条价，导致大薯条算出 ¥17.5。本版用**默认小食选项的商品码去菜单查价**做基准，价格永远对（中薯条 ¥14.5 → 大薯条 ¥16.0）。
+- **`query-meal-detail` 的 `rounds` 才是薯条藏身处。** 菜单（`query-meals`）只挂一个「薯条」（其实是中薯条）。大薯条、扭扭薯、薯饼只在套餐「选择套餐内小食」轮次里出现，带 `diffPrice`。
+- **大薯条没有单买菜单项。** 门店菜单里 `4820(大薯条)` 不存在于 `query-meals`，只能作为套餐升档选项（+¥1.5）。这是最反直觉的一点，必须告诉用户。
+- **`list-nutrition-foods` 的 `data` 是字符串不是 JSON**：`[160]{productName,energyKcal,...}:` 后接 CSV 行。热量字段叫 `energyKcal`，商品名叫 `productName`。营养库里有 中/小/大/迷你薯条 + 脆薯饼 + 脆脆薯条，但**扭扭薯、盒装通常不在营养库**（显示「营养暂无」属正常）。
+- **券是「用券价」不是满减。** `discountInfo.discountValue="9.9"` 表示花 9.9 买它，省多少 = 商品原价 − 9.9，必须结合菜单算。
+- **券有 `enable` 字段**，`0` = 还没到可用日期。麦当劳常把未来几天的券一次性发进卡包，不过滤会推荐今天用不了的。
+- **叠字券名要折叠。** 「薯薯任选」菜单里只有「薯条」「薯饼」，匹配前要把「薯薯」折成「薯」。
+
+## 真实输出长这样（北京双桥路门店）
+
 ```
+【一、单买薯条类单品】
+  · 薯条            ¥14.5   289 kcal   19.9 kcal/¥ （可单买）
+  · 心形薯饼5块      ¥15.5   146 kcal    9.4 kcal/¥ （可单买）
+  · 月下相思扭扭薯    ¥16.0   营养暂无            （可单买）
+  · "我就喜欢"鸡薯双全盒  ¥15.9  含心形薯饼  （盒装，价含其他）
 
-历史存在 `data/price_history.json`。第一次只有基线，用久了才有意义 —— 这是越用越值钱的功能。
+【二、可选薯条的套餐】共 38 个
+  麦辣鸡腿汉堡三件套（¥33.5）小食可换：
+      中薯条        +¥0   → ¥14.5  289 kcal  19.9 kcal/¥ ←默认
+      大薯条        +¥1.5 → ¥16.0  379 kcal  23.7 kcal/¥
+      月下相思扭扭薯  +¥1.5 → ¥16.0  营养暂无
+      5块心形薯饼+酱 +¥1.0 → ¥15.5  146 kcal   9.4 kcal/¥
 
-## 第二个用法：哪款才是性价比之王
-
-```bash
-python3 scripts/optimizer.py value \
-  --menu /tmp/menu.json \
-  --nutrition /tmp/nutrition.json
+【三、推荐结论】
+  1) 单买最划算：薯条（中薯条）19.9 kcal/¥。
+  2) 升档边际效率：麦辣鸡腿堡三件套 中薯条→大薯条 加 ¥1.5 多得 90 kcal，
+     边际 60.0 kcal/¥，是原单价 19.9 的 3.0 倍 —— 闭眼升。
+  3) 大薯条怎么买最便宜：只能靠套餐升档拿到（单买菜单没有它），
+     任何含中薯条的套餐 +¥1.5 即大薯条，到手 ¥16.0。
+  4) 用券：「薯薯任选」¥9.9 → 用在大薯条（原价 ¥16.0）省 ¥6.1，38.3 kcal/¥。
 ```
-
-营养数据来自 `list-nutrition-foods`。
-
-- `kcal_per_yuan` 高 = 同样的钱买到更多热量，**饱腹导向**
-- `protein_per_yuan` 高 = 同样的钱买到更多蛋白质，**健身导向**
-- 两个榜第一名经常不是同一个东西。薯条在热量榜常常碾压，在蛋白榜垫底。把这个反差讲给用户听，是这个工具最出彩的地方。
 
 ## 汇报给用户时怎么说
 
 不要甩 JSON。按这个顺序讲：
 
-1. **结论先给**："这样点最省，实付 X 元，比直接点省了 Y 元"
-2. **方案对比**：最优方案和次优差多少，值不值得为那几块钱多领一张券
-3. **为什么别的券用不了**：直接说"你卡包里那张满 60 减 12 差 23 元到门槛，加一份薯条就能用，多花 12 实付反而降 5"
-4. **历史判断**："这是你这单的历史最低价" 或 "比你上次贵 2.6 元，不急可以等"
+1. **先给全图鉴**："全门店能吃到薯条的有 8 款单品 + 38 个套餐，我已经全列出来了。"
+2. **结论先行**："单买最划算的是中薯条（19.9 kcal/¥）；但凡是套餐，闭眼把中薯条升大薯条——加 1.5 块多 90 大卡，边际是单价的 3 倍。"
+3. **反直觉点**："大薯条菜单上根本买不到单的，只能靠套餐升档，到手 16 块。"
+4. **券**："你卡包那张薯薯任选 9.9，用在大薯条最值，省 6 块多。"
 
-第 3 条尤其重要 —— 差多少到门槛、凑单是否划算，这才是"精算"该干的事。
+## 更省一层：麦门省钱精算师（同一套数据）
+
+薯条推荐只是入口。如果用户想**整单最省**（叠券、凑单、历史比价），同一份 `meals.json` / `nutrition.json` 直接喂给 `scripts/optimizer.py`：
+
+```bash
+python3 scripts/optimizer.py value --menu /tmp/mcd_fries/meals.json \
+  --nutrition /tmp/mcd_fries/nutrition.json     # 全菜单每元热量/蛋白榜
+python3 scripts/optimizer.py plan  --coupons ... --menu ... --items '巨无霸:1' '大薯条:1'
+python3 scripts/optimizer.py rank  --results /tmp/price_1.json ...   # 逐个 calculate-price 核价后排序
+```
+
+`scripts/mcd_schema.py` 是整套真实返回格式的适配层（券用券价 / 菜单字典 / 营养文本），薯条推荐官和省钱精算师共用。
 
 ## 边界与红线
 
-- **绝不擅自下单。** `create-order` 会真实扣款，任何下单动作必须用户明确说"就这个，下单"。核价阶段的 `calculate-price` 是安全的。
-- **不擅自领券。** `auto-bind-coupons` 会改动用户卡包，先问。
-- **Token 不外泄。** 不写进任何会被提交的文件，不在对话里展示明文，`mcp-config.example.json` 只允许环境变量占位符。
-- **限流 600 次/分钟。** 候选方案控制在 20 个以内（默认 `--max-combos 20`），超了先剪枝再核价。
-- **估算不是实付。** 任何 `estimated_*` 字段都必须说明以 `calculate-price` 为准，绝不能拿来当报价。
+- **绝不擅自下单。** `create-order` 真实扣款，任何下单动作必须用户明确说"就这个，下单"。`calculate-price` 核价是安全的。
+- **不擅自领券。** `auto-bind-coupons` 改动卡包，先问。
+- **Token 不外泄。** 不写进会被提交的文件，不在对话展示明文；配置只走环境变量。
+- **估算不是实付。** 任何 `kcal/¥`、券后省额都基于菜单原价，实付以 `calculate-price` 为准，绝不能当报价。
 - 数据只覆盖中国大陆（不含港澳台）。
-
-## 纯本地模式（没有 MCP 时）
-
-两个子命令完全离线，不需要 Token：
-
-- `optimizer.py value --menu 菜单.json --nutrition 营养.json` —— 性价比排行
-- `optimizer.py snap --show` —— 查看历史价格基线
-
-配合 `web/index.html`，把菜单 JSON 粘进去就能可视化看性价比榜单。
 
 ## 工具索引
 
-`scripts/mcp_client.py` —— 零依赖 MCP 客户端，也是排查连通性的第一站：
+`scripts/mcp_client.py` —— 零依赖 MCP 客户端，排查连通性的第一站：
 
 ```bash
-python3 scripts/mcp_client.py ping          # 验证 Token 与协议握手
-python3 scripts/mcp_client.py list-tools    # 看当前账号实际能用到哪些工具
-python3 scripts/mcp_client.py call query-my-coupons
-python3 scripts/mcp_client.py call calculate-price --args @payload.json
+python3 scripts/mcp_client.py ping           # 验证 Token 与协议握手
+python3 scripts/mcp_client.py call query-meals --args '{"storeCode":"1950264","beType":1,"orderType":1}'
 ```
-
-常见报错：`401` Token 失效，去 <https://open.mcd.cn/mcp> 重新拿；`429` 触发限流，降频重试。
 
 完整工具清单见 `references/tools.md`。
