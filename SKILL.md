@@ -1,6 +1,6 @@
 ---
 name: 麦门薯条推荐官
-description: 麦门薯条推荐官（触发词「我要吃薯条！」）。用麦当劳中国官方 MCP 把薯条吃明白——拉取门店菜单，枚举所有「含薯条 / 能选薯条」的单品与套餐，按每元热量和升档边际效率排出最划算的买法，并指出大薯条只能靠套餐升档、哪张券用在哪个薯条上最省。当用户说「我要吃薯条」「怎么买薯条最划算」「哪个套餐薯条最多」「大薯条怎么买」「升大薯条值不值」时使用。底层复用同一套麦当劳 MCP 适配层（mcd-value-engine）。
+description: 麦门薯条推荐官（触发词「我要吃薯条！」）。用麦当劳中国官方 MCP 把薯条吃明白——拉取门店菜单，枚举所有「含薯条 / 能选薯条」的单品与套餐，按每元热量和升档边际效率排出最划算的买法，并指出大薯条只能靠套餐升档、哪张券用在哪个薯条上最省。当用户说「我要吃薯条！」「怎么买薯条最划算」「哪个套餐薯条最多」「大薯条怎么买」「升大薯条值不值」时使用。底层复用同一套麦当劳 MCP 适配层（mcd-value-engine）。
 ---
 
 # 麦门薯条推荐官（别名：我要吃薯条！）
@@ -23,6 +23,7 @@ description: 麦门薯条推荐官（触发词「我要吃薯条！」）。用�
 - 麦当劳 MCP Token：到 <https://open.mcd.cn/mcp> 手机号登录后激活获取
 - 环境变量：`export MCD_MCP_TOKEN=你的token`
 - 端点 `https://mcp.mcd.cn`，Streamable HTTP，协议 `2025-06-18`，600 次/分钟（超限 429）
+- 先验证 Token 是否可用：`python3 scripts/mcp_client.py ping`（返回 401 = token 错/未激活，429 = 限流，能握手即正常）
 
 ## 主流程：把薯条吃明白
 
@@ -38,7 +39,7 @@ python3 scripts/fetch_fries_data.py --store 1950264 --out /tmp/mcd_fries
 - `list-nutrition-foods` → `nutrition.json`（160 条营养数据，性价比的分母）
 - 对**每个餐品**调 `query-meal-detail` → `details/<code>.json`（薯条规格和差价藏在这里）
 
-> 嫌调用多？加 `--combos-only` 只抓套餐类，调用量从 ~120 降到几十。
+> 嫌调用多？加 `--combos-only` 只抓套餐类，调用量从 ~120 降到约 50。
 
 ### 第 2 步：出全图鉴 + 推荐
 
@@ -47,9 +48,11 @@ python3 scripts/fries.py recommend \
   --meals /tmp/mcd_fries/meals.json \
   --nutrition /tmp/mcd_fries/nutrition.json \
   --details-dir /tmp/mcd_fries/details \
-  --coupons /tmp/mcd_fries/query-my-coupons.json \   # 可选，加上才有用券建议
+  --coupons /tmp/mcd_fries/query-my-coupons.json \
   --store "北京双桥路餐厅 (1950264)"
 ```
+
+> `--coupons` 是可选参数，带上才有用券建议；不带也能出全图鉴和升档结论。
 
 两个子命令：
 - `recommend` —— 全图鉴 + 推荐结论（给人看的报告）
